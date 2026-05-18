@@ -25,6 +25,8 @@ These results demonstrate that it is important for strength coaches and athletes
 
 ## Reproducible instructions
 
-The data was taken from the [OpenPowerlifting Data Service](\https://openpowerlifting.gitlab.ioopl-csv/introduction.html), specifically, we filtered for competitions with the name World University Powerlifting Cup from the past 8 years.
+The data was taken from the [OpenPowerlifting Data Service](https://openpowerlifting.gitlab.io/opl-csv/introduction.html), specifically, we filtered for competitions with the name World University Powerlifting Cup from the past 8 years.
+
+To run the analysis locally, install the required R packages with `install_deps.R`.
 
 All libraries used included: readr, tidyverse, dplyr, knitr, broom, patchwork, corrplot, rstatix, kableExtra, and nlme.
