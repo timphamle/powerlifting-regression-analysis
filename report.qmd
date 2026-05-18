@@ -1,0 +1,1096 @@
+---
+title: "Report"
+author: "Tim Le, Sophie Xu"
+format: pdf
+---
+
+```{r}
+#| lable: load
+#| message: false
+#| echo: false
+
+library(readr)
+library(tidyverse)
+library(dplyr)
+library(knitr)
+library(broom)
+library(patchwork)
+library(corrplot)
+library(rstatix)
+library(kableExtra)
+library(nlme)
+
+data <- read_csv("data/powerlifting.csv")
+```
+
+## Introduction
+
+Our dataset contains 1154 observations, each representing a lifter who participated in the World University Powerlifting Cup hosted by the International Powerlifting Federation (IPF). We combined results from the past 8 years (2017-2019, 2021-2025). Due to some lifters competing in multiple years, they may appear more than once in the dataset. Each observation includes variables such as the lifter’s sex, age, attempted bench press weights, attempted deadlift weights, attempted squat weights, country of origin, and placing in the meet, as well as the host country and year of the competition.
+
+The data we obtained is from Open Powerlifting openpowerlifting.org, a publicly available database that compiles official meet results from federations all over the world. The Open Powerlifting team manually collects and organizes competition data from their federations’ respective websites. We chose one out of the hundreds of competitions to work with, the World University Powerlifting Cup, because we as university students ourselves find it relevant and relatable. Focusing on the more recent years allowed us to create a manageable and up-to-date dataset for analysis.
+
+For this project, our research question is: **What is the most parsimonious combination of predictors such as bodyweight, sex, age, and home-country advantage that best predict a lifter's best lift in the squat, bench press, and deadlift (SBD)?**
+
+In this analysis, our three response variables are best squat weight (kg), best bench press weight (kg), and best deadlift weight (kg), and our key predictors include bodyweight, sex, age, and a binary indicator of whether the competition took place in the lifter's home country.
+
+This not only can be useful to future competitors in the World University Powerlifting Cup, but could also provide valuable insights for university students who lift recreationally and wish to better understand the factors that affect bench, deadlift and squat performance. Our motivation stems from our curiosity about powerlifting and our interest in examining how bodyweight, when controlling for other factors, impacts competitive outcomes. Understanding these relationships can reveal how these factors together influence strength performance at the university level.
+
+## Exploratory Data Analysis
+
+Our dataset includes 1154 observations representing lifter results from the World University Powerlifting Cup between 2017-2019 and 2021-2025. The key predictors examined in this analysis are:
+
+-   Best3SquatKg: Best successful squat weight (kg) - response variable
+
+-   Best3BenchKg: Best successful bench press weight (kg) - response variable
+
+-   Best3DeadliftKg: Best successful deadlift weight (kg) - response variable
+
+-   BodyweightKg: Lifter's bodyweight (kg) - main predictor
+
+-   Sex: Biological sex of lifter (M(ale) / F(emale)) - categorical predictor
+
+-   Age: Age of lifter (years) - continuous predictor
+
+-   CountryEqualMeet: Whether the lifter competed in their home country (1 (Yes) / 0 (No)) - binary predictor
+
+-   Disqualified: Whether the lifter was disqualified or not (1 (Yes) / 0 (No)) - binary predictor
+
+Our exploratory data analysis will examine the distributions of the response variable and the key predictors. The goal is to understand the general characteristics of the data and to identify any patterns that may inform our regression modeling.
+
+```{r}
+#| label: country-equal-meet
+#| message: false
+#| echo: false
+#| fig-width: 5
+#| fig-height: 3
+
+# Country Equal Meet Variable
+data <- data|>
+  mutate(
+    CountryEqualMeet = factor(ifelse(Country == MeetCountry, 1, 0)),
+    Disqualified = ifelse(Place == "DQ" | Place == "DD", 1, 0)
+  )|>
+  select(
+    Name, Sex, Age, BodyweightKg, Best3SquatKg, Best3BenchKg, Best3DeadliftKg,
+    TotalKg, Place, Dots, Country, MeetCountry, Year, 
+    CountryEqualMeet, Disqualified
+  )
+```
+
+```{r}
+#| label: univariate-bench
+#| message: false
+#| warning: false
+#| echo: false
+#| fig-width: 8
+#| fig-height: 3
+
+# Distribution of Best3SquatKg, Best3BenchKg, and Best3DeadliftKg
+ymax <- max(data$Best3SquatKg, data$Best3BenchKg, data$Best3DeadliftKg, na.rm = TRUE)
+
+squat <- ggplot(data, aes(x = Best3SquatKg)) +
+  geom_histogram(binwidth = 10, fill = "darkolivegreen", color = "white") +
+  labs(
+    x = "Squat (kg)",
+    y = "Count"
+  ) +
+  theme_minimal()
+
+bench <- ggplot(data, aes(x = Best3BenchKg)) +
+  geom_histogram(binwidth = 8, fill = "darkolivegreen", color = "white") +
+  labs(
+    x = "Bench Press (kg)",
+    y = ""
+  ) +
+  theme_minimal()
+
+deadlift <- ggplot(data, aes(x = Best3DeadliftKg)) +
+  geom_histogram(binwidth = 10, fill = "darkolivegreen", color = "white") +
+  labs(
+    x = "Deadlift (kg)",
+    y = ""
+  ) +
+  theme_minimal()
+
+combined <- (squat + bench + deadlift) +
+  plot_annotation(
+    title = "Distributions of Best Lifts: Squat, Bench Press, Deadlift",
+    theme = theme(
+      plot.title = element_text(size = 13, hjust = 0.5))
+  )
+combined
+```
+
+This distribution of best squat, best bench press, and best deadlift weights shows a clear bimodal distribution, suggesting two distinct groups of performance levels, likely corresponding to female and male lifters. This justifies analyzing male and female athletes separately and including Sex as a key predictor in the regression model.
+
+```{r}
+#| label: univariate-bodyweight
+#| message: false
+#| warning: false
+#| echo: false
+#| fig-width: 5
+#| fig-height: 3
+
+# Distribution of BodyweightKg
+ggplot(data, aes(x = BodyweightKg)) +
+  geom_histogram(binwidth = 8, fill = "darkolivegreen", color = "white") +
+  labs(
+    title = "Distribution of Lifter Bodyweights",
+    x = "Bodyweight (kg)",
+    y = "Count") +
+  theme_minimal()
+```
+
+The distribution of body weight shows a strong concentration around 60-90kg, but is right-skewed with some more outliers in the heavier weight classes.
+
+```{r}
+#| label: bivariate-age
+#| message: false
+#| warning: false
+#| echo: false
+#| fig-width: 14
+#| fig-height: 5
+
+# Age x Best3SquatKg
+age_squat <- ggplot(data, aes(x = Age, y = Best3SquatKg, color = Sex)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  scale_color_manual(
+    values = c("M" = "steelblue", 
+               "F" = "lightpink3")) +
+  labs(
+    x = "Age",
+    y = "Best Squat (kg)"
+  ) +
+  ylim(0, ymax) +
+  theme_light() +
+  theme(legend.position = "none")
+
+# Age x Best3BenchKg
+age_bench <- ggplot(data, aes(x = Age, y = Best3BenchKg, color = Sex)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  scale_color_manual(
+    values = c("M" = "steelblue", 
+               "F" = "lightpink3")) +
+  labs(
+    x = "Age",
+    y = "Best Bench Press (kg)"
+  ) +
+  ylim(0, ymax) +
+  theme_light() +
+  theme(legend.position = "none")
+
+# Age x Best3DeadliftKg
+age_deadlift <- ggplot(data, aes(x = Age, y = Best3DeadliftKg, color = Sex)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  scale_color_manual(
+    values = c("M" = "steelblue", 
+               "F" = "lightpink3")) +
+  labs(
+    x = "Age",
+    y = "Best Deadlift (kg)"
+  ) +
+  ylim(0, ymax) +
+  theme_light()
+
+combined <- (age_squat + age_bench + age_deadlift) +
+  plot_annotation(
+    title = "Scatterplots of Age: Squat, Bench Press, Deadlift colored by sex",
+    theme = theme(
+      plot.title = element_text(size = 20, hjust = 0.5))
+  )
+combined
+
+```
+
+These scatterplots show a moderate positive linear relationship between age and their respected SBD outcome variable for both men and women. The slope of the regression line for men is slightly steeper than the women's, with a higher intercept as well, suggesting while both men and females have higher SBD weights as age increases, men are, on average, lifting more than females. The difference in intercept and slopes in sexes suggest the possibility of an interactive term of sex onto age.
+
+```{r}
+#| label: bivariate-bodyweight-disqualified
+#| message: false
+#| warning: false
+#| echo: false
+#| fig-width: 14
+#| fig-height: 5
+
+# BodyweightKg x Best3SquatKg
+body_squat_DF <- ggplot(data, aes(x = BodyweightKg, y = Best3SquatKg)) +
+  geom_point(alpha = 0.6, aes(color = as.factor(Disqualified)), 
+             data = data |> arrange(Disqualified)) +
+  scale_color_manual(
+    name = "Disqualified?",
+    values = c("0" = "grey70", "1" = "firebrick"),
+    labels = c("0" = "No", "1" = "Yes")
+  ) +
+  facet_wrap(~ Sex) +
+  geom_smooth(method = "lm", se = FALSE, color = "steelblue") +
+  labs(
+    x = "Bodyweight (kg)",
+    y = "Best Squat (kg)",
+  ) +
+  ylim(0, ymax) +
+  theme_light() +
+  theme(legend.position = "none")
+
+# BodyweightKg x Best3BenchKg
+body_bench_DF <- ggplot(data, aes(x = BodyweightKg, y = Best3BenchKg)) +
+  geom_point(alpha = 0.6, aes(color = as.factor(Disqualified)), 
+             data = data |> arrange(Disqualified)) +
+  scale_color_manual(
+    name = "Disqualified?",
+    values = c("0" = "grey70", "1" = "firebrick"),
+    labels = c("0" = "No", "1" = "Yes")
+  ) +
+  facet_wrap(~ Sex) +
+  geom_smooth(method = "lm", se = FALSE, color = "steelblue") +
+  labs(
+    x = "Bodyweight (kg)",
+    y = "Best Bench Press (kg)",
+  ) +
+  ylim(0, ymax) +
+  theme_light() +
+  theme(legend.position = "none")
+
+# BodyweightKg x Best3DeadliftKg
+body_deadlift_DF <- ggplot(data, aes(x = BodyweightKg, y = Best3DeadliftKg)) +
+  geom_point(alpha = 0.6, aes(color = as.factor(Disqualified)), 
+             data = data |> arrange(Disqualified)) +
+  scale_color_manual(
+    name = "Disqualified?",
+    values = c("0" = "grey70", "1" = "firebrick"),
+    labels = c("0" = "No", "1" = "Yes")
+  ) +
+  facet_wrap(~ Sex) +
+  geom_smooth(method = "lm", se = FALSE, color = "steelblue") +
+  labs(
+    x = "Bodyweight (kg)",
+    y = "Best Deadlift (kg)",
+  ) +
+  ylim(0, ymax) +
+  theme_light()
+
+scatter_disqualified <- (body_squat_DF + body_bench_DF + body_deadlift_DF) +
+  plot_annotation(
+    title = "Scatterplots of Bodyweight by Sex: Squat, Bench Press, Deadlift,
+    colored by disqualified variable",
+    theme = theme(
+      plot.title = element_text(size = 20, hjust = 0.5))
+  )
+
+```
+
+We decided that we will exclude disqualified lifters from further regression analysis because their results appear to be inconsistent with the overall pattern—these lifters had higher SBD averages than those that were not disqualified as shown in *Appendix A: Disqualified Lifters*—to make sure that predictions are based on verified and consistent performances only.
+
+```{r}
+#| label: bivariate-bodyweight
+#| message: false
+#| warning: false
+#| echo: false
+#| fig-width: 14
+#| fig-height: 5
+
+data_with_disqualified <- data
+
+data <- data |>
+  filter(Disqualified == 0)
+
+# BodyweightKg X Best3SquatKg
+body_squat <- ggplot(data, aes(x = BodyweightKg, y = Best3SquatKg, color = Sex)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "lm", se = FALSE) +
+  scale_color_manual(
+    values = c("M" = "steelblue", 
+               "F" = "lightpink3")) +
+  labs(
+    x = "Bodyweight (kg)",
+    y = "Best Squat (kg)"
+  ) +
+  ylim(0, ymax) +
+  theme_light() +
+  theme(legend.position = "none")
+
+# BodyweightKg X Best3BenchKg
+body_bench <- ggplot(data, aes(x = BodyweightKg, y = Best3BenchKg, color = Sex)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "lm", se = FALSE) +
+  scale_color_manual(
+    values = c("M" = "steelblue", 
+               "F" = "lightpink3")) +
+  labs(
+    x = "Bodyweight (kg)",
+    y = "Best Bench Press (kg)"
+  ) +
+  ylim(0, ymax) +
+  theme_light() +
+  theme(legend.position = "none")
+
+# BodyweightKg X Best3DeadliftKg
+body_deadlift <- ggplot(data, aes(x = BodyweightKg, y = Best3DeadliftKg, color = Sex)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "lm", se = FALSE) +
+  scale_color_manual(
+    values = c("M" = "steelblue", 
+               "F" = "lightpink3")) +
+  labs(
+    x = "Bodyweight (kg)",
+    y = "Best Deadlift (kg)"
+  ) +
+  ylim(0, ymax) +
+  theme_light()
+
+combined <- (body_squat + body_bench + body_deadlift) +
+  plot_annotation(
+    title = "Scatterplots of Bodyweight by Sex: Squat, Bench Press, Deadlift,
+    colored by sex",
+    theme = theme(
+      plot.title = element_text(size = 20, hjust = 0.5))
+  )
+combined
+```
+
+The relationship between bodyweight and SBD is clearly positive for both sexes, indicating that heavier lifters generally lift more in the SBD exercises. The men have a higher y-intercept than women for all three lifts, and show a slightly steeper slope in bench press weights. This suggests that males tend to lift heavier and see a higher increase in bench press weight per increase in bodyweight (kg). This difference in intercept and slope tells us that sex may be a good interaction on bodyweight for the different lifts.
+
+```{r}
+#| label: bivariate-homemeet
+#| message: false
+#| warning: false
+#| echo: false
+#| fig-width: 14
+#| fig-height: 7
+
+data <- data |>
+  filter(!is.na(CountryEqualMeet))
+
+# Distribution of CountryEqualMeet X Best3SquatKg
+country_squat <- data |>
+  ggplot(aes(x = CountryEqualMeet, y = Best3SquatKg, fill = CountryEqualMeet)) +
+  geom_boxplot() +
+  scale_fill_manual(
+    values = c("0" = "seagreen4", 
+               "1" = "olivedrab")) +
+  facet_wrap(~ Sex) +
+  labs(
+    x = "Was competition a Home Meet?",
+    y = "Best Squat (kg)",
+    fill = "Home Meet"
+  ) +
+  ylim(0, ymax) +
+  theme_light() +
+  theme(legend.position = "none")
+
+# Distribution of CountryEqualMeet X Best3BenchKg
+country_bench <- data |>
+  ggplot(aes(x = CountryEqualMeet, y = Best3BenchKg, fill = CountryEqualMeet)) +
+  geom_boxplot() +
+  scale_fill_manual(
+    values = c("0" = "seagreen4", 
+               "1" = "olivedrab")) +
+  facet_wrap(~ Sex) +
+  labs(
+    x = "Was competition a Home Meet?",
+    y = "Best Bench Press (kg)",
+    fill = "Home Meet"
+  ) +
+  ylim(0, ymax) +
+  theme_light() +
+  theme(legend.position = "none")
+
+# Distribution of CountryEqualMeet X Best3DeadliftKg
+country_deadlift <- data |>
+  ggplot(aes(x = CountryEqualMeet, y = Best3DeadliftKg, fill = CountryEqualMeet)) +
+  geom_boxplot() +
+  scale_fill_manual(
+    values = c("0" = "seagreen4", 
+               "1" = "olivedrab")) +
+  facet_wrap(~ Sex) +
+  labs(
+    x = "Was competition a Home Meet?",
+    y = "Best Deadlift (kg)",
+    fill = "Home Meet"
+  ) +
+  ylim(0, ymax) +
+  theme_light() +
+  theme(legend.position = "none")
+
+combined <- (country_squat + country_bench + country_deadlift) +
+  plot_annotation(
+    title = "Box Plots of Home Country Advantage: Squat, Bench Press, Deadlift",
+    theme = theme(
+      plot.title = element_text(size = 20, hjust = 0.5))
+  )
+combined
+
+```
+
+These boxplots try to examine whether lifters have a home country advantage. Interestingly, male lifters and female lifters show different trends in their average best SBD weight based on home country meet or not, yet the differences are relatively small (\~5kg). Throughout the boxplots, lifters in their home country tend to have a lower median compared to out of country lifters. The only exception being males in the bench press. This suggests that home country effects may exist, but they are minor and possibly depend on sex.
+
+## Methodology
+
+For this research project, we are going to be using **Three Univariate Generalized Least Squares Models (GLS)** due them being the most robust, interpretative, and simple. These models are able to predict a lifter's best three lifts in the squat, bench, and deadlift and how each predictor is associated with all three lifts.
+
+Our GLS models follow this format: $$
+\begin{aligned}
+Y_{k} = X\beta_{k} + \epsilon_{k} \\
+\end{aligned}
+$$ where $k \in\{\text{Squat, Bench Press, Deadlift}\}$ and $\epsilon_{k,i} \sim N(0, \sigma^{2}_{Sex_i})$
+
+Prior to model fitting, we split the data up into training and test data using a 4:1 split ratio and set a seed for reproducibility. All model selection used only the traing set of around 920 observations. We then assumed no severe multicollinearity in this data by examining the pairwise correlation matrix of all our selected predictors. The threshold that we used to flag any problematic multicollinearity was an absolute correlation coefficient higher than 0.7. A *base* multivariate multiple linear regression model was fit to observe that the three error assumptions, linearity, constant variance, and normality, were violated. Switching over to GLS models, we used in an iterative and refinement process to explore various combinations of main effects and interaction terms to determine the most parsimonious model that maximized explanatory power. These models were compared using p-values of predictors and Bayesian Information Criterion (BIC). The final parsimonious model was the tested on the testing data to observe its explanatory variance and prediction error using R-squared values and Root Mean Squared Errors.
+
+```{r}
+#| label: train-test-data
+#| warning: false
+#| echo: false
+
+set.seed(1221)
+train <- data |>
+  sample_frac(0.8)
+
+test <- data |>
+  anti_join(train, by = "Name")
+
+```
+
+```{r}
+#| label: correlation-predictors
+#| warning: false
+#| echo: false
+#| fig-width: 4
+#| fig-height: 3
+
+correlations <- data |>
+  mutate(
+    Sex = as.numeric(ifelse(Sex == "M", 1, 0)),
+    CountryEqualMeet = as.numeric(CountryEqualMeet)
+  ) |>
+  select(
+    BodyweightKg,Sex, 
+    Age, CountryEqualMeet)|>
+  cor()
+
+corrplot(correlations, method = "number")
+
+```
+
+Based on the correlation matrix, the highest pairwise correlation observed was $r$ = 0.55 (BodyweightKg and Sex). All other pairs have correlation well below the common warning threshold: 0.7. We will now proceed with the assumption that there exists no severe multicollinearity in our regression analysis.
+
+```{r}
+#| label: linearity-var
+#| warning: false
+#| message: false
+#| echo: false
+#| fig-width: 14
+#| fig-height: 5
+
+model <- lm(cbind(Best3SquatKg, Best3BenchKg, Best3DeadliftKg) ~ BodyweightKg + Sex + Age, data = train)
+model_aug <- augment(model)
+
+sex = train$Sex
+
+residuals_df_squat <- data.frame(
+  fit = fitted(model)[,1],
+  res = residuals(model)[,1],
+  sex = sex
+)
+
+residuals_df_bench <- data.frame(
+  fit = fitted(model)[,2],
+  res = residuals(model)[,2],
+  sex = sex
+)
+
+residuals_df_deadlift <- data.frame(
+  fit = fitted(model)[,3],
+  res = residuals(model)[,3],
+  sex = sex
+)
+
+ymax <- max(residuals_df_squat$res, residuals_df_bench$res, residuals_df_deadlift$res, na.rm = TRUE)
+ymin <- min(residuals_df_squat$res, residuals_df_bench$res, residuals_df_deadlift$res, na.rm = TRUE)
+  
+# Residuals vs Fitted Values (Squat)
+res_fit_squat <- ggplot(residuals_df_squat, aes(x = fit, y = res, color = sex)) +
+  geom_point(alpha = 0.6) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  ylim(ymin, ymax) +
+  scale_color_manual(
+    values = c("M" = "steelblue", 
+               "F" = "lightpink3")) +
+  labs(
+    title = "BestSquatKg",
+    x = "Fitted Values",
+    y = "Residuals") +
+  theme_light() +
+  theme(legend.position = "none")
+
+# Residuals vs Fitted Values (Bench)
+res_fit_bench <- ggplot(residuals_df_bench, aes(x = fit, y = res, color = sex)) +
+  geom_point() +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  ylim(ymin, ymax) +
+  scale_color_manual(
+    values = c("M" = "steelblue", 
+               "F" = "lightpink3")) +
+  labs(
+    title = "BestBenchKg",
+    x = "Fitted Values",
+    y = "Residuals") +
+  theme_light() +
+  theme(legend.position = "none")
+
+# Residuals vs Fitted Values (Deadlift)
+res_fit_deadlift <- ggplot(residuals_df_deadlift, aes(x = fit, y = res, color = sex)) +
+  geom_point() +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  ylim(ymin, ymax) +
+  scale_color_manual(
+    values = c("M" = "steelblue", 
+               "F" = "lightpink3")) +
+  labs(
+    title = "BestDeadliftKg",
+    x = "Fitted Values",
+    y = "Residuals") +
+  theme_light()
+
+combined_res <- (res_fit_squat + res_fit_bench + res_fit_deadlift) +
+  plot_annotation(
+    title = "Residuals vs Fitted Values: Squat, Bench Press, Deadlift",
+    theme = theme(
+      plot.title = element_text(size = 20, hjust = 0.5))
+  )
+
+```
+
+```{r}
+#| label: normality
+#| warning: false
+#| message: false
+#| echo: false
+#| fig-width: 14
+#| fig-height: 8
+
+hist_squat <- ggplot(residuals_df_squat, aes(x = res)) +
+  geom_histogram(binwidth = 10, fill = "darkolivegreen", color = "white") +
+  labs(
+    x = "Residuals",
+    y = ""
+  ) +
+  theme_light()
+
+hist_bench <- ggplot(residuals_df_bench, aes(x = res)) +
+  geom_histogram(binwidth = 10, fill = "darkolivegreen", color = "white") +
+  labs(
+    x = "Residuals",
+    y = ""
+  ) +
+  theme_light()
+
+hist_deadlift <- ggplot(residuals_df_deadlift, aes(x = res)) +
+  geom_histogram(binwidth = 10, fill = "darkolivegreen", color = "white") +
+  labs(
+    x = "Residuals",
+    y = ""
+  ) +
+  theme_light()
+
+combined_hist <- (hist_squat + hist_bench + hist_deadlift) +
+  plot_annotation(
+    title = "Distribution of Residuals: Squat, Bench Press, Deadlift",
+    theme = theme(
+      plot.title = element_text(size = 20, hjust = 0.5))
+  )
+
+combined <- (combined_res / combined_hist) +
+  plot_annotation(
+    title = "Residuals vs Fitted Values and Distribution of Residuals",
+    theme = theme(
+      plot.title = element_text(size = 20, hjust = 0.5))
+  )
+
+combined
+
+```
+
+There are two distinct groups within the Residuals vs Fitted Values graph: Males and Females. This again confirms Sex as being a significant predictor. In all three graphs, we see that the points are generally centered around the red dotted line, representing when residuals = 0. These points do not show a clear or systematic pattern. We can reasonably assume linearity from this fit. However, when looking for heteroscedasticity, we see that the Female group's residuals are more tightly clustered compared to the Male group's. This means that there exist smaller variance for the female group than the male group, violating the assumption that the error variance is constant throughout all observations. In the three distribution graphs depict an approximate unimodal and symmetric distribution between residuals, aside from extreme outliers, normality is not severely violated here.
+
+Due to this non-constant variance, we proceed with **Generalized Least Squares Models** where the variance violation is addressed by weighting observations based on the inverse of their estimated variance. These GLS models will result in a better fit compared to standard OLS models.
+
+First we had to decide whether or not to include CountryEqualMeet as an additive predictor in the model. We did this by comparing the base model (w/o CountryEqualMeet) and full model (w/ CountryEqualMeet) based on BIC values. The full following outputted model coefficients are located in *Appendix C: Extended Results*.
+
+**Base Model:**
+
+$$
+\begin{aligned}
+Y_{k,i}= \beta_{0,k} + \beta_{1,k}BodyweightKg_{i} + \beta_{2,k}SexM_{i} + \beta_{3,k}Age_{i} + \epsilon_{k,i} \\
+\end{aligned}
+$$
+
+```{r}
+#| label: gls-base
+#| warning: false
+#| echo: false
+
+gls_base_squat <- gls(
+  Best3SquatKg ~ BodyweightKg + Sex + Age,
+  data = train,
+  weights = varIdent(form = ~ 1 | Sex) 
+)
+
+gls_base_bench <- gls(
+  Best3BenchKg ~ BodyweightKg + Sex + Age,
+  data = train,
+  weights = varIdent(form = ~ 1 | Sex) 
+)
+  
+gls_base_deadlift <- gls(
+  Best3DeadliftKg ~ BodyweightKg + Sex + Age,
+  data = train,
+  weights = varIdent(form = ~ 1 | Sex) 
+)
+
+gls_base_models <- list(
+  Best3SquatKg = gls_base_squat,
+  Best3BenchKg = gls_base_bench,
+  Best3DeadliftKg = gls_base_deadlift
+)
+
+tidy_gls <- function(model) {
+  summary(model)$tTable |>
+    as.data.frame() |>
+    rownames_to_column("term") |>
+    rename(
+      estimate = `Value`,
+      std.error = `Std.Error`,
+      statistic = `t-value`,
+      p.value = `p-value`
+    )
+}
+
+gls_base_bic <- map_dbl(gls_base_models, BIC)
+
+gls_base_results <- imap_dfr(gls_base_models, function(mod, name) {
+  tidy_gls(mod) %>% mutate(outcome = name)
+}) %>%
+  select(outcome, everything())
+
+# gls_base_results |>
+#   head(4) |>
+#   kable(digits = 3)
+
+```
+
+**Full Model:**
+
+$$
+\begin{aligned}
+Y_{k,i}= \beta_{0,k} + \beta_{1,k}BodyweightKg_i + \beta_{2,k}SexM_i + \beta_{3,k}Age_i + \beta_{4,k}CountryEqualMeet1_i + \epsilon_{k,i}
+\end{aligned}
+$$
+
+```{r}
+#| label: gls-full
+#| warning: false
+#| echo: false
+
+gls_full_squat <- gls(
+  Best3SquatKg ~ BodyweightKg + Sex + Age + CountryEqualMeet,
+  data = train,
+  weights = varIdent(form = ~ 1 | Sex) 
+)
+
+gls_full_bench <- gls(
+  Best3BenchKg ~ BodyweightKg + Sex + Age + CountryEqualMeet,
+  data = train,
+  weights = varIdent(form = ~ 1 | Sex) 
+)
+  
+gls_full_deadlift <- gls(
+  Best3DeadliftKg ~ BodyweightKg + Sex + Age + CountryEqualMeet,
+  data = train,
+  weights = varIdent(form = ~ 1 | Sex) 
+)
+
+gls_full_models <- list(
+  Best3SquatKg = gls_full_squat,
+  Best3BenchKg = gls_full_bench,
+  Best3DeadliftKg = gls_full_deadlift
+)
+
+gls_full_bic <- map_dbl(gls_full_models, BIC)
+
+gls_full_results <- imap_dfr(gls_full_models, function(mod, name) {
+  tidy_gls(mod) %>% mutate(outcome = name)
+}) %>%
+  select(outcome, everything())
+
+# gls_full_results |>
+#   head(5) |>
+#   kable(digits = 3)
+
+```
+
+```{r}
+#| label: bic_base
+#| warning: false
+#| echo: false
+
+model_comparison <- data.frame(
+  Model = c("Base Model", "Full Model"),
+  Squat = c(gls_base_bic[1], gls_full_bic[1]),
+  Bench = c(gls_base_bic[2], gls_full_bic[2]),
+  Deadlift = c(gls_base_bic[3], gls_full_bic[3])
+)
+
+model_comparison |>
+  kable(
+    caption = "Comparison of Base and Full Model BIC",
+    digits = c(0, 0, 3),
+    col.names = c("Model", "Best3SquatKg", "Best3BenchKg", "Best3DeadliftKg")
+  )
+
+```
+
+From *Table 1*, we see that the full models have the lowest BIC values. This is surprising because from our exploratory data analysis, it seemed that CountryEqualMeet was not a statistically significant predictor. While BIC penalizes the addition of statistically insignificant predictors, the inclusion of CountryEqualMeet actually lowered the BIC. This supports CountryEqualMeet significant predictor.
+
+After deciding that CountryEqualMeet would be an additive predictor in the model, we tested various combinations of Sex interactions on BodyweightKg and Age.
+
+**Full Model with Sex Interaction on BodyweightKg:** $$
+\begin{aligned}
+Y_{k,i} = \beta_{0,k} + \beta_{1,k}BodyweightKg_i + \beta_{2,k}(BodyweightKg_i*SexM_{i}) + \beta_{3,k}SexM_{i}\\
++ \beta_{4,k}Age_{i} + \beta_{5,k}CountryEqualMeet1_i + \epsilon_{k,i}
+\end{aligned}
+$$
+
+```{r}
+#| label: full-interaction-sex-body-regression
+#| warning: false
+#| echo: false
+
+gls_full_sex_body_squat <- gls(
+  Best3SquatKg ~ BodyweightKg + BodyweightKg*Sex + Sex + Age + CountryEqualMeet,
+  data = train,
+  weights = varIdent(form = ~ 1 | Sex) 
+)
+
+gls_full_sex_body_bench <- gls(
+  Best3BenchKg ~ BodyweightKg + BodyweightKg*Sex + Sex + Age + CountryEqualMeet,
+  data = train,
+  weights = varIdent(form = ~ 1 | Sex) 
+)
+  
+gls_full_sex_body_deadlift <- gls(
+  Best3DeadliftKg ~ BodyweightKg + BodyweightKg*Sex + Sex + Age + CountryEqualMeet,
+  data = train,
+  weights = varIdent(form = ~ 1 | Sex) 
+)
+
+gls_full_sex_body_models <- list(
+  Best3SquatKg = gls_full_sex_body_squat,
+  Best3BenchKg = gls_full_sex_body_bench,
+  Best3DeadliftKg = gls_full_sex_body_deadlift
+)
+
+gls_full_sex_body_bic <- map_dbl(gls_full_sex_body_models, BIC)
+
+gls_full_sex_body_results <- imap_dfr(gls_full_sex_body_models, function(mod, name) {
+  tidy_gls(mod) %>% mutate(outcome = name)
+}) %>%
+  select(outcome, everything())
+
+# gls_full_sex_body_results |>
+#   head(6) |>
+#   kable(digits = 3)
+
+```
+
+**Full Model with Sex Interaction on Age:** $$
+\begin{aligned}
+Y_{k,i} = \beta_{0,k} + \beta_{1,k}BodyweightKg_i + \beta_{2,k}SexM_{i} + \beta_{3,k}Age_i\\
++ \beta_{4,k}(Age_{i}*SexM_{i}) + \beta_{5,k}CountryEqualMeet1_i + \epsilon_{k,i} \\
+\end{aligned}
+$$
+
+```{r}
+#| label: full-interaction-sex-age-regression
+#| warning: false
+#| echo: false
+
+gls_full_sex_age_squat <- gls(
+  Best3SquatKg ~ BodyweightKg + Sex + Age*Sex + CountryEqualMeet,
+  data = train,
+  weights = varIdent(form = ~ 1 | Sex) 
+)
+
+gls_full_sex_age_bench <- gls(
+  Best3BenchKg ~ BodyweightKg + Sex + Age*Sex + CountryEqualMeet,
+  data = train,
+  weights = varIdent(form = ~ 1 | Sex) 
+)
+  
+gls_full_sex_age_deadlift <- gls(
+  Best3DeadliftKg ~ BodyweightKg + Sex + Age*Sex + CountryEqualMeet,
+  data = train,
+  weights = varIdent(form = ~ 1 | Sex) 
+)
+
+gls_full_sex_age_models <- list(
+  Best3SquatKg = gls_full_sex_age_squat,
+  Best3BenchKg = gls_full_sex_age_bench,
+  Best3DeadliftKg = gls_full_sex_age_deadlift
+)
+
+gls_full_sex_age_bic <- map_dbl(gls_full_sex_age_models, BIC)
+
+gls_full_sex_age_results <- imap_dfr(gls_full_sex_age_models, function(mod, name) {
+  tidy_gls(mod) %>% mutate(outcome = name)
+}) %>%
+  select(outcome, everything())
+
+# gls_full_sex_age_results |>
+#   head(6) |>
+#   kable(digits = 3)
+```
+
+**Full Model with Sex Interaction on BodyweightKg and Age:** $$
+\begin{aligned}
+Y_{k,i} = \beta_{0,k} + \beta_{1,k}BodyweightKg_{i} + \beta_{2,k}(BodyweightKg_{i}*SexM_{i})\\
++ \beta_{3,k}SexM_{i} + \beta_{4,k}Age_i + \beta_{5,k}(Age_{i}*SexM_{i}) + \beta_{6,k}CountryEqualMeet1_i + \epsilon_{k,i}\\
+\end{aligned}
+$$
+
+```{r}
+#| label: full-interaction-sex-both-regression
+#| warning: false
+#| echo: false
+
+gls_full_sex_both_squat <- gls(
+  Best3SquatKg ~ BodyweightKg*Sex + Sex + Age*Sex + CountryEqualMeet,
+  data = train,
+  weights = varIdent(form = ~ 1 | Sex) 
+)
+
+gls_full_sex_both_bench <- gls(
+  Best3BenchKg ~ BodyweightKg*Sex + Sex + Age*Sex + CountryEqualMeet,
+  data = train,
+  weights = varIdent(form = ~ 1 | Sex) 
+)
+  
+gls_full_sex_both_deadlift <- gls(
+  Best3DeadliftKg ~ BodyweightKg*Sex + Sex + Age*Sex + CountryEqualMeet,
+  data = train,
+  weights = varIdent(form = ~ 1 | Sex) 
+)
+
+gls_full_sex_both_models <- list(
+  Best3SquatKg = gls_full_sex_both_squat,
+  Best3BenchKg = gls_full_sex_both_bench,
+  Best3DeadliftKg = gls_full_sex_both_deadlift
+)
+
+gls_full_sex_both_bic <- map_dbl(gls_full_sex_both_models, BIC)
+
+gls_full_sex_both_results <- imap_dfr(gls_full_sex_both_models, function(mod, name) {
+  tidy_gls(mod) %>% mutate(outcome = name)
+}) %>%
+  select(outcome, everything())
+
+# gls_full_sex_both_results |>
+#   head(7) |>
+#   kable(digits = 3)
+
+```
+
+```{r}
+#| label: aic-full-interaction
+#| warning: false
+#| echo: false
+
+model_comparison <- data.frame(
+  Model = c("Full Model", "Bodyweight * Sex", "Age * Sex", "Both * Sex"),
+  Squat = c(gls_full_bic[1], gls_full_sex_body_bic[1], gls_full_sex_age_bic[1], gls_full_sex_both_bic[1]),
+  Bench = c(gls_full_bic[2], gls_full_sex_body_bic[2], gls_full_sex_age_bic[2], gls_full_sex_both_bic[2]),
+  Deadlift = c(gls_full_bic[3], gls_full_sex_body_bic[3], gls_full_sex_age_bic[3], gls_full_sex_both_bic[3])
+)
+
+model_comparison |>
+  kable(
+    caption = "Comparison of Interactive Models BIC",
+    digits = c(0, 0, 3),
+    col.names = c("Model", "Best3SquatKg", "Best3BenchKg", "Best3DeadliftKg")
+  )
+
+```
+
+From *Table 2*, when we add a Sex interaction effect on just BodyweightKg, it results in the lowest BIC for Best3BenchKg. While for Best3SquatKg and Best3DeadliftKg, the original full model without any interaction terms results in the lowest BIC. Therefore, our final models will include a Sex interaction on Bodyweight for Best3BenchKg and no interactions Best3SquatKg and Best3DeadliftKg.
+
+## Results
+
+Observing the p-values for our "parsimonious models", its predictors contain the lowest p-values on average compared to the other models with combinations of interactions. For example, when comparing the Best3SquatKg and Best3DeadliftKg full model p-values to other models, the full model consistently had lower p-values on average among the predictors. The Age predictor's p-value increased significantly when including interaction terms for Best3SquatKg and Best3DeadliftKg. This suggests that Age as a predictor loses statistical significance when we combine it with other predictors and interactions in these two outcomes. This is due to increasing model complexity to where these interactions are "absorbing" some of the variance that Age was able to explain.
+
+We then used these models to predict the actual best SBD weights of our testing data for $s \in\{\text{Squat, Deadlift}\}$ and for $t \in\{\text{Bench Press}\}$
+
+$$
+\begin{aligned}
+Y_{s,i} = \beta_{0,s} + \beta_{1,s}BodyweightKg_i + \beta_{2,s}SexM_i\\
++ \beta_{3,s}Age_i + \beta_{4,s}CountryEqualMeet1_i + \epsilon_{s,i}
+\end{aligned}
+$$ $$
+\begin{aligned}
+Y_{t,i} = \beta_{0,t} + \beta_{1,t}BodyweightKg_i + \beta_{2,t}(BodyweightKg_i*SexM_{i})\\
++ \beta_{3,t}SexM_{i} + \beta_{4,t}Age_{i} + \beta_{5,t}CountryEqualMeet1_i + \epsilon_{t,i}
+\end{aligned}
+$$
+
+```{r}
+#| label: show-coefficients
+#| warning: false
+#| echo: false
+
+gls_full_sex_body_results |>
+  slice(7:12) |>
+  kable(digits = 3)
+
+gls_full_results |>
+  head(5) |>
+  kable(digits = 3)
+
+gls_full_results |>
+  slice(11:15) |>
+  kable(digits = 3)
+```
+
+For bench press, each additional kg of bodyweight has a 0.5kg increase in bench weight and each additional year of age has a 1.24kg increase in bench weight, both while holding other variables constant. The positive Bodyweight and SexM interaction suggests that male lifters' performances increase more steeply with bodyweight for men than for women. For squat and deadlift, the final additive GLS models show broadly similar patterns: male lifters lift significantly heavier than female lifters; increase in bodyweight and age increases their squat and deadlift weights; competing in one's home country is associated with lower lift weights.
+
+```{r}
+#| label: test-train
+#| warning: false
+#| echo: false
+
+pred_squat <- predict(gls_full_squat, newdata = test)
+pred_bench <- predict(gls_full_sex_body_bench, newdata = test)
+pred_deadlift <- predict(gls_full_deadlift, newdata = test)
+
+
+test_results <- test |>
+  mutate(
+    pred_squat = pred_squat,
+    pred_bench = pred_bench,
+    pred_deadlift = pred_deadlift
+  ) |>
+  select(
+    Best3SquatKg, pred_squat, Best3BenchKg, pred_bench, Best3DeadliftKg, pred_deadlift
+  )
+test_results |>
+  head(5) |>
+  kable(digits = 1, caption = "Predicted vs Actual Lifts for Test Data (First 5 Observations)")
+```
+
+```{r}
+#| label: r-squared
+#| warning: false
+#| echo: false
+
+rsq <- function(actual, predicted) cor(actual, predicted)^2
+rmse <- function(actual, predicted) sqrt(mean((actual - predicted)^2))
+
+results <- data.frame(
+  Lift = c("Squat", "Bench", "Deadlift"),
+  R2 = c(
+    rsq(test$Best3SquatKg, pred_squat),
+    rsq(test$Best3BenchKg, pred_bench),
+    rsq(test$Best3DeadliftKg, pred_deadlift)
+  ),
+  RMSE = c(
+    rmse(test$Best3SquatKg, pred_squat),
+    rmse(test$Best3BenchKg, pred_bench),
+    rmse(test$Best3DeadliftKg, pred_deadlift)
+  )
+)
+
+results |>
+  kable(digits = 3, caption = "Model Performance Metrics for Test Data")
+
+```
+
+The results suggest that our model explains around 80% of the variance of the testing data, which is moderately well. However, our average error is 18-32 kg, with deadlift predictions being the least accurate, possibly due to greater variability in deadlift performance among lifters.
+
+## Discussion + Conclusion
+
+We faced some limitations in our research pertaining to the way the models were fit. We utilized three separate univariate GLS models rather than a single multivariate GLS model which failed to account the high correlation between our outcomes and relationship with the parsimonious predictors, as showed in *Appendix B: Correlation Among Outcomes*.
+
+The analysis is also limited by the structure and scope of the underlying data. Some lifters appear in multiple years of competition, but our models treat each meet result as an independent observation, ignoring potential correlations within individual lifters that could be better handled using other models with random effects for lifter. In addition, we only model a small set of observed predictors (bodyweight, sex, age, and countryequalsmeet), while important factors such as training history, equipment, weight class, competitive experience, and injury status are unobserved and may confound or mediate the relationships we estimate.
+
+From our research, we concluded that the most parsimonious generalized least squares models to predict SBD weights by collegiate powerlifters consists of the following additive predictors: BodyweightKg, Sex, Age, a binary indicator of whether the competition took place in the lifter's home country, and a Sex interaction on BodyweightKg specifically when predicting the best bench press attempt. These final models demonstrated strong predictive power, \~80% explanation of the variance, and had an average prediction error of 18-32kg across all SBD lifts. Furthermore, they represented the most parsimonious set of predictors, as indicated by lower average p-values predictors and BIC scores among candidate models.
+
+For coaches and athletes, this highlights the importance of monitoring strength relative to bodyweight and recognizing that expected performance gains with increased bodyweight differ between men and women, particularly for bench press. Future research could extend our work by incorporating additional competition-level and lifter-level variables and fitting a proper multivariate GLS or other joint modeling approaches to better account for the correlation among outcomes.
+
+\pagebreak
+
+## Appendix
+
+**Appendix A: Disqualified Lifters:**
+
+```{r}
+#| label: appendix-a-disqualified
+#| message: false
+#| warning: false
+#| echo: false
+#| fig-width: 14
+#| fig-height: 5
+
+scatter_disqualified
+
+```
+
+**Appendix B: Correlation Among Outcomes**
+
+```{r}
+#| label: correlation-outcomes
+#| warning: false
+#| echo: false
+#| fig-width: 4
+#| fig-height: 3
+
+correlations <- data |>
+  select(
+    Best3SquatKg,Best3BenchKg, 
+    Best3DeadliftKg)|>
+  cor()
+
+corrplot(correlations, method = "number")
+```
+
+**Appendix C: Extended Results**
+
+```{r}
+#| label: extended-results
+#| warning: false
+#| echo: false
+
+gls_base_results |>
+  kable(
+    caption = "Base Models", 
+    digits = 3)
+
+gls_full_results |>
+  kable(
+    caption = "Full Models", 
+    digits = 3)
+
+gls_full_sex_body_results |>
+  kable(
+    caption = "Sex Interaction on BodyweightKg Models",
+    digits = 3)
+
+gls_full_sex_age_results |>
+  kable(
+    caption = "Sex Interaction on Age Models",
+    digits = 3)
+
+gls_full_sex_both_results |>
+  kable(
+    caption = "Sex Interaction Both BodyweightKg and Age Models",
+    digits = 3)
+
+```
